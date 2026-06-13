@@ -7,6 +7,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write # 允许 tag 触发时创建 Release 并上传安装包
+
 jobs:
   build:
     name: Build (${{ matrix.name }})
@@ -54,3 +57,11 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.glob }}
           if-no-files-found: error
+
+      # 仅当由 v* tag 触发时：把安装包挂到对应的 GitHub Release。
+      # 该 action 幂等——首个 job 创建 Release，其余 job 追加文件。
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.glob }}
