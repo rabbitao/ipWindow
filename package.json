@@ -1,0 +1,44 @@
+{
+  "name": "ip-window",
+  "version": "1.0.0",
+  "description": "A draggable floating widget showing current IP address and location",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "icons": "electron render-png.js",
+    "dist:win": "electron-builder --win --x64",
+    "dist:mac": "electron-builder --mac --x64 --arm64",
+    "dist": "electron-builder -mw"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.local.ipwindow",
+    "productName": "IPWindow",
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "styles.css",
+      "assets/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png",
+      "artifactName": "IPWindow-${version}-win-x64.${ext}"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.utilities",
+      "artifactName": "IPWindow-${version}-mac-${arch}.${ext}"
+    }
+  }
+}

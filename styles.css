@@ -1,0 +1,143 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+}
+
+#card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: rgba(20, 22, 28, 0.82);
+  color: #f2f3f5;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  /* The whole card is the drag handle. */
+  -webkit-app-region: drag;
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+#row-ip,
+#row-loc,
+#row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.label {
+  font-size: 10px;
+  color: #8b909a;
+  flex: 0 0 auto;
+  width: 26px;
+}
+
+.value {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#ip {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+#row-meta {
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: #6f747e;
+}
+
+#row-meta .value {
+  font-size: 10px;
+}
+
+/* ISP takes the leftover space and truncates with an ellipsis... */
+#isp {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ...so the update time is never squeezed and always shows in full. */
+#time {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f0b429;
+  flex: 0 0 auto;
+}
+.dot.ok {
+  background: #2ecc71;
+}
+.dot.err {
+  background: #e74c3c;
+}
+.dot.loading {
+  background: #f0b429;
+  animation: pulse 1s infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+#close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  text-align: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #6f747e;
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  /* Buttons must be clickable, so exclude them from the drag region. */
+  -webkit-app-region: no-drag;
+}
+#card:hover #close {
+  opacity: 1;
+}
+#close:hover {
+  color: #fff;
+  background: rgba(231, 76, 60, 0.7);
+}
