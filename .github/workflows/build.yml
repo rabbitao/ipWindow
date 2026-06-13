@@ -41,7 +41,9 @@ jobs:
         run: npm ci
 
       - name: Build
-        run: npm run ${{ matrix.script }}
+        # --publish never：只产出安装包，不自动发布到 GitHub Releases
+        # （否则 tag 触发时 electron-builder 会要求 GH_TOKEN）。
+        run: npm run ${{ matrix.script }} -- --publish never
         env:
           # 不做签名/公证，仅产出未签名安装包。
           CSC_IDENTITY_AUTO_DISCOVERY: false
