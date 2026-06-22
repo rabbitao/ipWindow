@@ -50,3 +50,12 @@ $('refresh').addEventListener('click', () => {
 const widget = $('widget');
 widget.addEventListener('mouseenter', () => window.ipApi.popoverEnter());
 widget.addEventListener('mouseleave', () => window.ipApi.popoverLeave());
+
+// Press-and-drag the widget to move it along the taskbar; the main process
+// takes over (polling the cursor) and snaps to the nearer side on release.
+// The refresh button keeps its own click.
+widget.addEventListener('mousedown', (e) => {
+  if (e.button !== 0 || e.target.closest('#refresh')) return;
+  e.preventDefault();
+  window.ipApi.dragStart();
+});

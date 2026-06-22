@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld('ipApi', {
   quit: () => ipcRenderer.send('app:quit'),
   popoverEnter: () => ipcRenderer.send('popover:enter'),
   popoverLeave: () => ipcRenderer.send('popover:leave'),
+  dragStart: () => ipcRenderer.send('taskbar:dragStart'),
 });

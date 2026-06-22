@@ -41,6 +41,10 @@ const WIN_WIDTH = 260;
 const WIN_HEIGHT = 74;
 const POPOVER_WIDTH = 260;
 const POPOVER_HEIGHT = 84;
+// Taskbar overlay widget footprint and spacing (DIP).
+const TASKBAR_WIDGET_WIDTH = 210;
+const TASKBAR_LEFT_MARGIN = 6; // gap from the taskbar's left edge when no weather button
+const TASKBAR_GAP = 8; // gap from the weather button / system tray
 const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
 
 // ---------- Display mode ----------
@@ -103,12 +107,20 @@ const STRINGS = {
 
 let t = STRINGS.en; // resolved in app.whenReady once the locale is available.
 
-let win = null; // primary window: floating card or embedded taskbar widget
+let win = null; // primary window: floating card or taskbar overlay widget
 let popover = null; // hover detail popover (taskbar + menubar modes)
 let tray = null;
 let refreshTimer = null;
 let popoverHideTimer = null;
 let lastInfo = null; // most recent successful lookup
+
+// ---------- Taskbar overlay state (Windows 11) ----------
+let taskbarHwnd = null; // BigInt HWND of our overlay window
+let taskbarTimer = null; // periodic reposition / z-order assert
+let taskbarTick = 0;
+let dragTimer = null; // active while the user drags the widget
+let draggingTaskbar = false;
+let dragGrabDX = 0; // cursor-x minus window-x at drag start
 
 // ---------- IP lookup ----------
 // ip-api.com (free, no key). Returns the public IP of the requester + geo info.
@@ -253,15 +265,16 @@ function createFloatingWindow() {
 
 function createTaskbarWindow() {
   win = new BrowserWindow({
-    width: taskbarWin.WIDGET_WIDTH,
+    width: TASKBAR_WIDGET_WIDTH,
     height: 48,
     icon: ICON_PATH,
     frame: false,
-    transparent: true,
+    transparent: true, // -> WS_EX_LAYERED, blends into the taskbar
     backgroundColor: '#00000000',
     resizable: false,
-    focusable: false,
-    skipTaskbar: true,
+    focusable: false, // -> WS_EX_NOACTIVATE, clicking it never steals focus
+    skipTaskbar: true, // -> tool window, no taskbar button / Alt-Tab entry
+    alwaysOnTop: true,
     show: false,
     hasShadow: false,
     fullscreenable: false,
@@ -269,24 +282,24 @@ function createTaskbarWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // Keep the embedded widget repainting even though Chromium may consider
-      // a reparented window occluded.
+      // The window may be considered occluded by the taskbar; keep painting.
       backgroundThrottling: false,
     },
   });
 
+  // 'screen-saver' is a z-band above the (topmost) taskbar.
+  win.setAlwaysOnTop(true, 'screen-saver');
   win.loadFile('taskbar.html');
 
   win.webContents.on('did-finish-load', () => {
     sendI18n(win);
     win.webContents.send('theme', currentTheme());
-    // Show it (so Chromium starts painting) before reparenting it into the
-    // taskbar — embed() repositions it immediately, so any flash is momentary.
-    win.showInactive();
-    // Reparent the window into the taskbar. If it fails for any reason, fall
-    // back to the regular floating card so the app stays usable.
-    if (!taskbarWin.embed(win)) {
-      console.error('[main] taskbar embed failed, falling back to floating');
+    const hb = win.getNativeWindowHandle();
+    taskbarHwnd = hb.length >= 8 ? hb.readBigUInt64LE(0) : BigInt(hb.readUInt32LE(0));
+    // Place it over the taskbar before showing. If the taskbar can't be found,
+    // fall back to the regular floating card so the app stays usable.
+    if (!positionTaskbarWidget()) {
+      console.error('[main] taskbar not found, falling back to floating');
       mode = 'floating';
       destroyPopover();
       win.destroy();
@@ -294,8 +307,107 @@ function createTaskbarWindow() {
       createFloatingWindow();
       return;
     }
+    win.showInactive();
+    taskbarWin.refreshWidgetsButton();
+    // Re-assert placement + z-order every second to follow taskbar resize / DPI
+    // / theme / explorer restarts.
+    taskbarTimer = setInterval(onTaskbarTick, 1000);
     refreshAndSend();
   });
+}
+
+function taskbarSide() {
+  return config.taskbarSide === 'right' ? 'right' : 'left';
+}
+
+// Win32 RECT (in physical px) -> {x,y,width,height}.
+function rectXYWH(r) {
+  return { x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top };
+}
+
+// Compute the widget's bounds (DIP) for the configured side, anchored to the
+// right of the weather button (left side) or the left of the system tray
+// (right side). Returns null if the taskbar can't be located.
+function computeTaskbarBounds() {
+  const layout = taskbarWin.getLayout();
+  if (!layout) return null;
+  const tb = screen.screenToDipRect(null, rectXYWH(layout.taskbarRect));
+  const W = TASKBAR_WIDGET_WIDTH;
+  let x;
+  if (taskbarSide() === 'right' && layout.trayRect) {
+    const tray = screen.screenToDipRect(null, rectXYWH(layout.trayRect));
+    x = tray.x - W - TASKBAR_GAP;
+  } else if (layout.widgetsRight != null) {
+    x = screen.screenToDipPoint({ x: layout.widgetsRight, y: layout.taskbarRect.top }).x + TASKBAR_GAP;
+  } else {
+    x = tb.x + TASKBAR_LEFT_MARGIN;
+  }
+  // Keep it within the taskbar horizontally.
+  x = Math.max(tb.x, Math.min(x, tb.x + tb.width - W));
+  return { x: Math.round(x), y: Math.round(tb.y), width: W, height: Math.round(tb.height) };
+}
+
+function positionTaskbarWidget() {
+  if (!win || win.isDestroyed()) return false;
+  const b = computeTaskbarBounds();
+  if (!b) return false;
+  win.setBounds(b);
+  return true;
+}
+
+function onTaskbarTick() {
+  if (!win || win.isDestroyed() || draggingTaskbar) return;
+  positionTaskbarWidget();
+  if (taskbarHwnd) taskbarWin.assertTopmost(taskbarHwnd);
+  // Re-check the weather button every ~10s (it appears/disappears or changes
+  // width when Widgets is toggled or the forecast text changes).
+  if (++taskbarTick % 10 === 0) taskbarWin.refreshWidgetsButton();
+}
+
+// ---------- Drag to reposition (snaps to the nearer side) ----------
+function startTaskbarDrag() {
+  if (mode !== 'taskbar' || !win || win.isDestroyed() || draggingTaskbar) return;
+  const cur = screen.getCursorScreenPoint();
+  dragGrabDX = cur.x - win.getBounds().x;
+  draggingTaskbar = true;
+  if (popover && !popover.isDestroyed()) popover.hide();
+  if (dragTimer) clearInterval(dragTimer);
+  dragTimer = setInterval(onTaskbarDrag, 16);
+}
+
+function onTaskbarDrag() {
+  if (!win || win.isDestroyed()) return stopTaskbarDrag(false);
+  // The renderer can't report mouseup once the cursor leaves our non-activating
+  // window, so we poll the physical button state instead.
+  if (!taskbarWin.isLeftMouseDown()) return stopTaskbarDrag(true);
+  const layout = taskbarWin.getLayout();
+  const b = win.getBounds();
+  let x = screen.getCursorScreenPoint().x - dragGrabDX;
+  if (layout) {
+    const tb = screen.screenToDipRect(null, rectXYWH(layout.taskbarRect));
+    x = Math.max(tb.x, Math.min(x, tb.x + tb.width - b.width));
+  }
+  win.setBounds({ x: Math.round(x), y: b.y, width: b.width, height: b.height });
+  if (taskbarHwnd) taskbarWin.assertTopmost(taskbarHwnd);
+}
+
+function stopTaskbarDrag(snap) {
+  if (dragTimer) {
+    clearInterval(dragTimer);
+    dragTimer = null;
+  }
+  draggingTaskbar = false;
+  if (!snap || !win || win.isDestroyed()) return;
+  // Choose the side from the widget's center relative to the taskbar center,
+  // persist it, then snap to that side's anchor.
+  const layout = taskbarWin.getLayout();
+  if (layout) {
+    const tb = screen.screenToDipRect(null, rectXYWH(layout.taskbarRect));
+    const b = win.getBounds();
+    config.taskbarSide = b.x + b.width / 2 < tb.x + tb.width / 2 ? 'left' : 'right';
+    saveConfig(config);
+  }
+  positionTaskbarWidget();
 }
 
 function createPopover() {
@@ -337,13 +449,13 @@ function positionPopover() {
   if (!popover || popover.isDestroyed()) return;
   const pb = popover.getBounds();
   if (mode === 'taskbar') {
-    const r = taskbarWin.getWidgetScreenRect();
-    if (!r) return;
-    // Win32 returns physical pixels; Electron bounds are in DIPs.
-    const dip = screen.screenToDipPoint({ x: r.x, y: r.y });
+    // The widget is now a normal window we position ourselves, so anchor the
+    // popover directly above its current bounds.
+    if (!win || win.isDestroyed()) return;
+    const wb = win.getBounds();
     popover.setBounds({
-      x: Math.round(dip.x),
-      y: Math.round(dip.y) - pb.height - 6,
+      x: Math.round(wb.x),
+      y: Math.round(wb.y) - pb.height - 6,
       width: pb.width,
       height: pb.height,
     });
@@ -360,6 +472,7 @@ function positionPopover() {
 
 function showPopover() {
   if (!popover || popover.isDestroyed()) return;
+  if (draggingTaskbar) return; // don't pop the detail card mid-drag
   if (popoverHideTimer) {
     clearTimeout(popoverHideTimer);
     popoverHideTimer = null;
@@ -468,6 +581,7 @@ ipcMain.on('ip:refresh', () => refreshAndSend());
 ipcMain.on('app:quit', () => app.quit());
 ipcMain.on('popover:enter', showPopover);
 ipcMain.on('popover:leave', hidePopover);
+ipcMain.on('taskbar:dragStart', startTaskbarDrag);
 
 app.whenReady().then(() => {
   // Resolve UI language from the OS locale (Chinese → zh, otherwise English).
@@ -510,5 +624,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   if (refreshTimer) clearInterval(refreshTimer);
-  if (mode === 'taskbar' && taskbarWin) taskbarWin.release();
+  if (taskbarTimer) clearInterval(taskbarTimer);
+  if (dragTimer) clearInterval(dragTimer);
 });

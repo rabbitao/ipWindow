@@ -36,6 +36,10 @@ body.light {
   padding: 0 6px 0 8px;
   border-radius: 6px;
   transition: background 0.15s;
+  cursor: grab;
+}
+#widget:active {
+  cursor: grabbing;
 }
 /* Subtle hover fill matching native Windows 11 taskbar buttons. */
 body.dark #widget:hover {
