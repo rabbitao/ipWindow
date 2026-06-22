@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('ipApi', {
   onLoading: (cb) => ipcRenderer.on('ip:loading', () => cb()),
   onUpdate: (cb) => ipcRenderer.on('ip:update', (_e, data) => cb(data)),
   onError: (cb) => ipcRenderer.on('ip:error', (_e, data) => cb(data)),
+  onTheme: (cb) => ipcRenderer.on('theme', (_e, theme) => cb(theme)),
   refresh: () => ipcRenderer.send('ip:refresh'),
   quit: () => ipcRenderer.send('app:quit'),
+  popoverEnter: () => ipcRenderer.send('popover:enter'),
+  popoverLeave: () => ipcRenderer.send('popover:leave'),
 });

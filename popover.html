@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self';"
+    />
+    <title>IPWindow</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      /* This card only shows on hover — it is never dragged. */
+      #card {
+        -webkit-app-region: no-drag;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="card">
+      <div id="row-ip">
+        <span class="dot" id="status-dot"></span>
+        <span class="label">IP</span>
+        <span class="value" id="ip">…</span>
+      </div>
+      <div id="row-loc">
+        <span class="label" id="label-loc">位置</span>
+        <span class="value" id="loc">—</span>
+      </div>
+      <div id="row-meta">
+        <span class="value" id="isp"></span>
+        <span class="value" id="time"></span>
+      </div>
+    </div>
+    <script src="popover-renderer.js"></script>
+  </body>
+</html>

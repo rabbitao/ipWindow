@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self';"
+    />
+    <title>IPWindow</title>
+    <link rel="stylesheet" href="taskbar.css" />
+  </head>
+  <body class="dark">
+    <div id="widget">
+      <div id="info">
+        <div id="row-ip">
+          <span class="dot" id="status-dot"></span>
+          <span class="value" id="ip">…</span>
+        </div>
+        <div id="row-loc">
+          <span class="value" id="loc">—</span>
+        </div>
+      </div>
+      <button id="refresh" title="刷新">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"
+          />
+        </svg>
+      </button>
+    </div>
+    <script src="taskbar-renderer.js"></script>
+  </body>
+</html>

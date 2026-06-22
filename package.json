@@ -12,6 +12,9 @@
   },
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
   "devDependencies": {
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3"
@@ -25,7 +28,17 @@
       "index.html",
       "renderer.js",
       "styles.css",
-      "assets/**"
+      "taskbar-win.js",
+      "taskbar.html",
+      "taskbar.css",
+      "taskbar-renderer.js",
+      "popover.html",
+      "popover-renderer.js",
+      "assets/**",
+      "node_modules/koffi/**"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/**"
     ],
     "win": {
       "target": "nsis",
