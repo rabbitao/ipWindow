@@ -204,6 +204,61 @@ async function refreshAndSend() {
   }
 }
 
+// ---------- Network-change auto refresh ----------
+// Watch for local network transitions (link up/down, VPN/TUN adapters coming
+// and going, system proxy toggled on/off) and trigger a single refresh shortly
+// after things settle. We don't have a reliable cross-platform "network
+// changed" event in the main process, so we poll a cheap signature instead.
+let lastNetSig = null; // null = baseline not established yet
+let netWatchTimer = null;
+let netChangeDebounce = null;
+
+// Signature of every non-internal interface address. Captures connect /
+// disconnect and proxy adapters (Clash/V2Ray TUN etc.) appearing or vanishing.
+function netInterfaceSig() {
+  const ifaces = os.networkInterfaces();
+  const parts = [];
+  for (const name of Object.keys(ifaces).sort()) {
+    for (const ni of ifaces[name] || []) {
+      if (ni.internal) continue;
+      parts.push(`${name}:${ni.family}:${ni.address}`);
+    }
+  }
+  return parts.join('|');
+}
+
+// Combine the interface signature with the proxy Chromium would use for the
+// lookup, so flipping the *system proxy* (no adapter change) is also caught.
+async function computeNetSig() {
+  let proxy = '';
+  try {
+    proxy = await session.defaultSession.resolveProxy('http://ip-api.com');
+  } catch {}
+  return netInterfaceSig() + '##' + proxy;
+}
+
+function onNetSig(sig) {
+  if (lastNetSig === null) {
+    lastNetSig = sig; // first observation is just the baseline, no refresh
+    return;
+  }
+  if (sig === lastNetSig) return;
+  lastNetSig = sig;
+  // A single transition emits several intermediate states (address dropped,
+  // then re-acquired, proxy re-resolved); coalesce them into one refresh.
+  if (netChangeDebounce) clearTimeout(netChangeDebounce);
+  netChangeDebounce = setTimeout(() => {
+    netChangeDebounce = null;
+    refreshAndSend();
+  }, 1500);
+}
+
+function startNetworkWatch() {
+  const tick = () => computeNetSig().then(onNetSig).catch(() => {});
+  tick(); // establish the baseline now
+  netWatchTimer = setInterval(tick, 3000);
+}
+
 function sendI18n(target) {
   if (!target || target.isDestroyed()) return;
   target.webContents.send('i18n', {
@@ -631,6 +686,10 @@ app.whenReady().then(() => {
   // Refresh every 5 minutes.
   refreshTimer = setInterval(refreshAndSend, 5 * 60 * 1000);
 
+  // Also refresh once whenever the local network changes (connect / disconnect,
+  // proxy started, VPN adapter up/down).
+  startNetworkWatch();
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       if (mode === 'taskbar') createTaskbarWindow();
@@ -645,6 +704,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   if (refreshTimer) clearInterval(refreshTimer);
+  if (netWatchTimer) clearInterval(netWatchTimer);
+  if (netChangeDebounce) clearTimeout(netChangeDebounce);
   if (taskbarTimer) clearInterval(taskbarTimer);
   if (dragTimer) clearInterval(dragTimer);
   if (reassertTimer) clearTimeout(reassertTimer);
