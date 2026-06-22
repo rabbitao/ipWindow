@@ -118,6 +118,7 @@ let lastInfo = null; // most recent successful lookup
 let taskbarHwnd = null; // BigInt HWND of our overlay window
 let taskbarTimer = null; // periodic reposition / z-order assert
 let taskbarTick = 0;
+let reassertTimer = null; // delayed z-order re-assert after a foreground change
 let dragTimer = null; // active while the user drags the widget
 let draggingTaskbar = false;
 let dragGrabDX = 0; // cursor-x minus window-x at drag start
@@ -312,6 +313,11 @@ function createTaskbarWindow() {
     // Re-assert placement + z-order every second to follow taskbar resize / DPI
     // / theme / explorer restarts.
     taskbarTimer = setInterval(onTaskbarTick, 1000);
+    // Activating another app reshuffles the z-order and lets the (topmost)
+    // taskbar paint over our (also-topmost) overlay. Re-assert immediately on
+    // every foreground change so the widget doesn't blink out until the next
+    // tick.
+    taskbarWin.startForegroundWatch(reassertTaskbarTopmost);
     refreshAndSend();
   });
 }
@@ -362,6 +368,21 @@ function onTaskbarTick() {
   // Re-check the weather button every ~10s (it appears/disappears or changes
   // width when Widgets is toggled or the forecast text changes).
   if (++taskbarTick % 10 === 0) taskbarWin.refreshWidgetsButton();
+}
+
+// Fired by the foreground-change hook. Re-assert z-order at once, then once more
+// shortly after — the new window's activation finishes restacking slightly after
+// the event, so a single immediate call can lose the race.
+function reassertTaskbarTopmost() {
+  if (!win || win.isDestroyed() || draggingTaskbar || !taskbarHwnd) return;
+  taskbarWin.assertTopmost(taskbarHwnd);
+  if (reassertTimer) clearTimeout(reassertTimer);
+  reassertTimer = setTimeout(() => {
+    reassertTimer = null;
+    if (win && !win.isDestroyed() && !draggingTaskbar && taskbarHwnd) {
+      taskbarWin.assertTopmost(taskbarHwnd);
+    }
+  }, 50);
 }
 
 // ---------- Drag to reposition (snaps to the nearer side) ----------
@@ -626,4 +647,6 @@ app.on('before-quit', () => {
   if (refreshTimer) clearInterval(refreshTimer);
   if (taskbarTimer) clearInterval(taskbarTimer);
   if (dragTimer) clearInterval(dragTimer);
+  if (reassertTimer) clearTimeout(reassertTimer);
+  if (taskbarWin) taskbarWin.stopForegroundWatch();
 });

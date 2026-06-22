@@ -38,12 +38,27 @@ const SetWindowPos = user32.func('SetWindowPos', 'bool', [
 ]);
 const GetAsyncKeyState = user32.func('GetAsyncKeyState', 'short', ['int']);
 
+// WinEvent hook: fires whenever the system foreground window changes. We use it
+// to re-assert our overlay's z-order the instant another app is activated,
+// instead of waiting for the slow (1s) reposition tick.
+const WinEventProc = koffi.proto(
+  'void __stdcall WinEventProc(void* hook, uint32 event, uintptr_t hwnd, ' +
+    'int32 idObject, int32 idChild, uint32 idEventThread, uint32 dwmsEventTime)'
+);
+const SetWinEventHook = user32.func('SetWinEventHook', 'void*', [
+  'uint32', 'uint32', 'uintptr_t', koffi.pointer(WinEventProc), 'uint32', 'uint32', 'uint32',
+]);
+const UnhookWinEvent = user32.func('UnhookWinEvent', 'bool', ['void*']);
+
 // ---- Win32 constants ----
 const HWND_TOPMOST = 0xffffffffffffffffn; // (HWND)-1
 const SWP_NOSIZE = 0x0001;
 const SWP_NOMOVE = 0x0002;
 const SWP_NOACTIVATE = 0x0010;
 const VK_LBUTTON = 0x01;
+const EVENT_SYSTEM_FOREGROUND = 0x0003;
+const WINEVENT_OUTOFCONTEXT = 0x0000;
+const WINEVENT_SKIPOWNPROCESS = 0x0002;
 
 function toHandle(v) {
   return typeof v === 'bigint' ? v : BigInt(v);
@@ -128,9 +143,57 @@ function isLeftMouseDown() {
   }
 }
 
+// ---- Foreground-change watch ----
+// Keep references alive so the registered callback isn't garbage-collected while
+// the OS still holds the hook.
+let foregroundHook = null; // HWINEVENTHOOK pointer
+let foregroundCb = null; // koffi-registered callback pointer
+
+// Start watching for foreground-window changes. `onForeground` is invoked (with
+// no arguments) on the main thread each time another app is activated, so the
+// caller can immediately re-assert the overlay's z-order. Events from our own
+// process are skipped. Returns true if the hook was installed. Calling again
+// replaces any existing hook.
+function startForegroundWatch(onForeground) {
+  stopForegroundWatch();
+  try {
+    foregroundCb = koffi.register(() => {
+      try {
+        onForeground();
+      } catch {}
+    }, koffi.pointer(WinEventProc));
+    foregroundHook = SetWinEventHook(
+      EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+      0n, foregroundCb, 0, 0,
+      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+    );
+    if (!foregroundHook) {
+      stopForegroundWatch();
+      return false;
+    }
+    return true;
+  } catch {
+    stopForegroundWatch();
+    return false;
+  }
+}
+
+function stopForegroundWatch() {
+  try {
+    if (foregroundHook) UnhookWinEvent(foregroundHook);
+  } catch {}
+  try {
+    if (foregroundCb) koffi.unregister(foregroundCb);
+  } catch {}
+  foregroundHook = null;
+  foregroundCb = null;
+}
+
 module.exports = {
   getLayout,
   refreshWidgetsButton,
   assertTopmost,
   isLeftMouseDown,
+  startForegroundWatch,
+  stopForegroundWatch,
 };
