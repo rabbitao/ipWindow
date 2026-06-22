@@ -14,25 +14,35 @@ body {
     sans-serif;
 }
 
-/* Opaque background that matches the taskbar theme. Reparented (WS_CHILD)
-   windows don't render transparency reliably, so we paint a solid color
-   that follows the OS light/dark setting. */
+/* The window is transparent so it blends into the taskbar like a native
+   element (e.g. the weather/Widgets button); only #widget paints, and only a
+   translucent highlight on hover. Text color follows the OS light/dark theme. */
 body.dark {
-  background: #1f2023;
+  background: transparent;
   color: #f2f3f5;
 }
 body.light {
-  background: #f3f3f3;
+  background: transparent;
   color: #1a1a1a;
 }
 
 #widget {
-  width: 100%;
-  height: 100%;
+  /* Inset slightly so the hover highlight reads as a rounded taskbar button. */
+  height: calc(100% - 8px);
+  margin: 4px 2px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 6px 0 4px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+/* Subtle hover fill matching native Windows 11 taskbar buttons. */
+body.dark #widget:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+body.light #widget:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 #info {

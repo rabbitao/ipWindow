@@ -7,6 +7,7 @@
 // the caller can fall back to the floating-panel display mode.
 
 const koffi = require('koffi');
+const { execFile } = require('child_process');
 
 const user32 = koffi.load('user32.dll');
 
@@ -46,12 +47,19 @@ const SWP_FLAGS = SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW;
 // the actual taskbar height; width is fixed.
 const WIDGET_WIDTH = 210;
 const LEFT_MARGIN = 6;
+// Gap to leave between the weather/Widgets button and our widget.
+const WIDGETS_GAP = 8;
 
 let childHwnd = 0n;          // our Electron window
 let taskbarHwnd = 0n;       // Shell_TrayWnd
 let originalStyle = null;   // to restore on release
 let timer = null;
+let tickCount = 0;
 let taskbarRect = null;     // last known taskbar rect in screen coords
+let widgetX = LEFT_MARGIN;  // current x of our widget, relative to the taskbar
+// Right edge (screen px) of the native weather/Widgets button, or null when it
+// isn't present. We sit just to its right so we don't cover it.
+let widgetsButtonRight = null;
 
 function toHandle(v) {
   // Normalize koffi's number|bigint handle returns to BigInt for comparisons.
@@ -68,15 +76,61 @@ function findTaskbar() {
   return toHandle(FindWindowW('Shell_TrayWnd', null));
 }
 
-// Position the widget at the far-left of the taskbar, full taskbar height.
+// The native weather/Widgets button isn't a real HWND — it lives inside the
+// taskbar's XAML/composition surface — so we locate it through UI Automation
+// (by its stable AutomationId "WidgetsButton") and read its bounding rect.
+// Run out-of-process via PowerShell; the lookup is ~250ms so we poll it
+// occasionally rather than every tick. Output: "x,y,w,h" (screen px) or empty.
+const UIA_PROBE = [
+  "$ErrorActionPreference='SilentlyContinue'",
+  'Add-Type -AssemblyName UIAutomationClient',
+  'Add-Type -AssemblyName UIAutomationTypes',
+  '$ae=[System.Windows.Automation.AutomationElement]',
+  '$root=$ae::RootElement',
+  "$tc=New-Object System.Windows.Automation.PropertyCondition($ae::ClassNameProperty,'Shell_TrayWnd')",
+  '$tray=$root.FindFirst([System.Windows.Automation.TreeScope]::Children,$tc)',
+  'if($tray){',
+  "  $ic=New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty,'WidgetsButton')",
+  '  $b=$tray.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$ic)',
+  "  if($b){$r=$b.Current.BoundingRectangle; Write-Output ('{0},{1},{2},{3}' -f [int]$r.X,[int]$r.Y,[int]$r.Width,[int]$r.Height)}",
+  '}',
+].join('\n');
+
+function queryWidgetsButton() {
+  // PowerShell -EncodedCommand takes base64 of a UTF-16LE string; this sidesteps
+  // all shell quoting and works the same whether or not we're inside an asar.
+  const encoded = Buffer.from(UIA_PROBE, 'utf16le').toString('base64');
+  execFile(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+    { timeout: 4000, windowsHide: true },
+    (err, stdout) => {
+      if (err) return; // keep the last known value on failure
+      const m = String(stdout).trim().match(/^(-?\d+),(-?\d+),(-?\d+),(-?\d+)/);
+      const next = m ? parseInt(m[1], 10) + parseInt(m[3], 10) : null;
+      if (next !== widgetsButtonRight) {
+        widgetsButtonRight = next;
+        applyBounds(); // reposition right away when the weather button moves/appears
+      }
+    }
+  );
+}
+
+// Place the widget at full taskbar height, just to the right of the weather/
+// Widgets button when it's present, otherwise at the far-left.
 function applyBounds() {
   const rect = {};
   if (!GetWindowRect(taskbarHwnd, rect)) return false;
   taskbarRect = rect;
   const height = rect.bottom - rect.top;
   // Coordinates are relative to the taskbar's client area now that we're a
-  // child of it, so x=LEFT_MARGIN sits at the leftmost edge.
-  SetWindowPos(childHwnd, 0n, LEFT_MARGIN, 0, WIDGET_WIDTH, height, SWP_FLAGS);
+  // child of it. widgetsButtonRight is a screen-x, so subtract the taskbar's
+  // left edge to convert it.
+  widgetX =
+    widgetsButtonRight != null
+      ? widgetsButtonRight - rect.left + WIDGETS_GAP
+      : LEFT_MARGIN;
+  SetWindowPos(childHwnd, 0n, widgetX, 0, WIDGET_WIDTH, height, SWP_FLAGS);
   return true;
 }
 
@@ -92,6 +146,7 @@ function reparent() {
 
   SetParent(childHwnd, taskbarHwnd);
   applyBounds();
+  queryWidgetsButton(); // refresh the weather-button anchor after (re)embedding
 }
 
 // Re-assert placement once per second: re-embed if explorer restarted (the
@@ -106,6 +161,9 @@ function tick() {
       return;
     }
     applyBounds();
+    // Re-check the weather button every ~10s: it appears/disappears or changes
+    // width when the user toggles Widgets or the forecast text changes.
+    if (++tickCount % 10 === 0) queryWidgetsButton();
   } catch {
     // Swallow transient failures; next tick retries.
   }
@@ -146,7 +204,7 @@ function getWidgetScreenRect() {
   if (!taskbarRect) return null;
   const height = taskbarRect.bottom - taskbarRect.top;
   return {
-    x: taskbarRect.left + LEFT_MARGIN,
+    x: taskbarRect.left + widgetX,
     y: taskbarRect.top,
     width: WIDGET_WIDTH,
     height,
