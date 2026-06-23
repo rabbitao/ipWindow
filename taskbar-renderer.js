@@ -11,10 +11,31 @@ let T = {
 window.ipApi.onI18n((strings) => {
   T = strings;
   $('ip').textContent = T.ipLoading;
+  scheduleWidth();
 });
 
 function setDot(state) {
   $('status-dot').className = 'dot' + (state ? ' ' + state : '');
+}
+
+// Ask the main process to size the window to the actual text, so the refresh
+// button sits right after the IP/location instead of being pushed to the far
+// right by a fixed-width window. We measure each text span's scrollWidth (the
+// full, untruncated text width even when the span is visually ellipsized) and
+// add the fixed chrome around it (dot, gaps, refresh button, paddings/margins).
+const DOT_W = 6; // .dot width
+const ROW_GAP = 5; // gap inside #row-ip between the dot and the IP
+const CHROME = 52; // widget margins + paddings + gap + 24px refresh button + safety
+function reportWidth() {
+  const ipNeed = DOT_W + ROW_GAP + $('ip').scrollWidth;
+  const locNeed = $('loc').scrollWidth;
+  const content = Math.max(ipNeed, locNeed);
+  window.ipApi.taskbarResize(Math.ceil(content) + CHROME);
+}
+
+// Text layout settles after the current frame, so measure on the next one.
+function scheduleWidth() {
+  requestAnimationFrame(reportWidth);
 }
 
 window.ipApi.onLoading(() => {
@@ -25,12 +46,14 @@ window.ipApi.onUpdate((data) => {
   setDot('ok');
   $('ip').textContent = data.ip || '—';
   $('loc').textContent = data.location || T.unknownLoc;
+  scheduleWidth();
 });
 
 window.ipApi.onError((data) => {
   setDot('err');
   $('ip').textContent = T.queryFailed;
   $('loc').textContent = data.message || T.networkError;
+  scheduleWidth();
 });
 
 // Follow the OS light/dark theme so text stays legible on the taskbar.
@@ -58,4 +81,11 @@ widget.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || e.target.closest('#refresh')) return;
   e.preventDefault();
   window.ipApi.dragStart();
+});
+
+// The window follows the cursor during a drag, so the pointer stays over the
+// widget and this mouseup fires reliably — a prompt end signal that backs up the
+// main process's physical-button polling.
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 0) window.ipApi.dragEnd();
 });

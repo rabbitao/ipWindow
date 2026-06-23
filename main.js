@@ -42,7 +42,9 @@ const WIN_HEIGHT = 74;
 const POPOVER_WIDTH = 260;
 const POPOVER_HEIGHT = 84;
 // Taskbar overlay widget footprint and spacing (DIP).
-const TASKBAR_WIDGET_WIDTH = 210;
+const TASKBAR_WIDGET_WIDTH = 210; // initial width before the renderer reports its content size
+const TASKBAR_MIN_WIDTH = 110; // never shrink below this (keeps "Loading…" / short text readable)
+const TASKBAR_MAX_WIDTH = 320; // beyond this the location text ellipsizes instead of growing
 const TASKBAR_LEFT_MARGIN = 6; // gap from the taskbar's left edge when no weather button
 const TASKBAR_GAP = 8; // gap from the weather button / system tray
 const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
@@ -120,8 +122,10 @@ let taskbarTimer = null; // periodic reposition / z-order assert
 let taskbarTick = 0;
 let reassertTimer = null; // delayed z-order re-assert after a foreground change
 let dragTimer = null; // active while the user drags the widget
+let dragSafetyTimer = null; // hard stop so a missed mouse-up can't wedge the drag
 let draggingTaskbar = false;
 let dragGrabDX = 0; // cursor-x minus window-x at drag start
+let taskbarWidgetWidth = TASKBAR_WIDGET_WIDTH; // current width (DIP), driven by content
 
 // ---------- IP lookup ----------
 // ip-api.com (free, no key). Returns the public IP of the requester + geo info.
@@ -321,7 +325,7 @@ function createFloatingWindow() {
 
 function createTaskbarWindow() {
   win = new BrowserWindow({
-    width: TASKBAR_WIDGET_WIDTH,
+    width: taskbarWidgetWidth,
     height: 48,
     icon: ICON_PATH,
     frame: false,
@@ -393,7 +397,7 @@ function computeTaskbarBounds() {
   const layout = taskbarWin.getLayout();
   if (!layout) return null;
   const tb = screen.screenToDipRect(null, rectXYWH(layout.taskbarRect));
-  const W = TASKBAR_WIDGET_WIDTH;
+  const W = taskbarWidgetWidth;
   let x;
   if (taskbarSide() === 'right' && layout.trayRect) {
     const tray = screen.screenToDipRect(null, rectXYWH(layout.trayRect));
@@ -414,6 +418,18 @@ function positionTaskbarWidget() {
   if (!b) return false;
   win.setBounds(b);
   return true;
+}
+
+// The renderer measures its content and reports the width the widget needs. We
+// clamp it to a sane range, then resize + reposition so the refresh button hugs
+// the text (no fixed-width gap) while staying anchored to its taskbar side.
+function setTaskbarWidth(width) {
+  if (mode !== 'taskbar' || !win || win.isDestroyed()) return;
+  const w = Math.max(TASKBAR_MIN_WIDTH, Math.min(TASKBAR_MAX_WIDTH, Math.round(width || 0)));
+  if (w === taskbarWidgetWidth) return;
+  taskbarWidgetWidth = w;
+  // Don't fight an in-progress drag; the next reposition picks up the new width.
+  if (!draggingTaskbar) positionTaskbarWidget();
 }
 
 function onTaskbarTick() {
@@ -442,13 +458,31 @@ function reassertTaskbarTopmost() {
 
 // ---------- Drag to reposition (snaps to the nearer side) ----------
 function startTaskbarDrag() {
-  if (mode !== 'taskbar' || !win || win.isDestroyed() || draggingTaskbar) return;
+  if (mode !== 'taskbar' || !win || win.isDestroyed()) return;
+  // Self-healing: always clear any prior drag state first. If a previous drag
+  // ever failed to detect mouse-up (e.g. the poll was skipped across a
+  // sleep/resume or a throttled timer), `draggingTaskbar` would otherwise stay
+  // stuck true and silently block every future drag.
+  clearDragTimers();
   const cur = screen.getCursorScreenPoint();
   dragGrabDX = cur.x - win.getBounds().x;
   draggingTaskbar = true;
   if (popover && !popover.isDestroyed()) popover.hide();
-  if (dragTimer) clearInterval(dragTimer);
   dragTimer = setInterval(onTaskbarDrag, 16);
+  // Backstop: even if mouse-up detection fails entirely, never stay in drag mode
+  // longer than this (a single drag is always far shorter).
+  dragSafetyTimer = setTimeout(() => stopTaskbarDrag(true), 15000);
+}
+
+function clearDragTimers() {
+  if (dragTimer) {
+    clearInterval(dragTimer);
+    dragTimer = null;
+  }
+  if (dragSafetyTimer) {
+    clearTimeout(dragSafetyTimer);
+    dragSafetyTimer = null;
+  }
 }
 
 function onTaskbarDrag() {
@@ -468,10 +502,11 @@ function onTaskbarDrag() {
 }
 
 function stopTaskbarDrag(snap) {
-  if (dragTimer) {
-    clearInterval(dragTimer);
-    dragTimer = null;
+  if (!draggingTaskbar) {
+    clearDragTimers();
+    return;
   }
+  clearDragTimers();
   draggingTaskbar = false;
   if (!snap || !win || win.isDestroyed()) return;
   // Choose the side from the widget's center relative to the taskbar center,
@@ -658,6 +693,8 @@ ipcMain.on('app:quit', () => app.quit());
 ipcMain.on('popover:enter', showPopover);
 ipcMain.on('popover:leave', hidePopover);
 ipcMain.on('taskbar:dragStart', startTaskbarDrag);
+ipcMain.on('taskbar:dragEnd', () => stopTaskbarDrag(true));
+ipcMain.on('taskbar:resize', (_e, width) => setTaskbarWidth(width));
 
 app.whenReady().then(() => {
   // Resolve UI language from the OS locale (Chinese → zh, otherwise English).
@@ -707,7 +744,7 @@ app.on('before-quit', () => {
   if (netWatchTimer) clearInterval(netWatchTimer);
   if (netChangeDebounce) clearTimeout(netChangeDebounce);
   if (taskbarTimer) clearInterval(taskbarTimer);
-  if (dragTimer) clearInterval(dragTimer);
+  clearDragTimers();
   if (reassertTimer) clearTimeout(reassertTimer);
   if (taskbarWin) taskbarWin.stopForegroundWatch();
 });
