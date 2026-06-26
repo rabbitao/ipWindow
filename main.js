@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   ipcMain,
   Menu,
+  Notification,
   Tray,
   nativeImage,
   nativeTheme,
@@ -48,10 +49,11 @@ const TASKBAR_MAX_WIDTH = 320; // beyond this the location text ellipsizes inste
 const TASKBAR_LEFT_MARGIN = 6; // gap from the taskbar's left edge when no weather button
 const TASKBAR_GAP = 8; // gap from the weather button / system tray
 const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
+const MAC_TRAY_ICON_PATH = path.join(__dirname, 'assets', 'trayTemplate.png');
 
 // ---------- Display mode ----------
 // taskbar  -> Windows 11 (embed widget into the taskbar)
-// menubar  -> macOS (title in the menu bar + hover popover)
+// menubar  -> macOS (title in the menu bar + click notification)
 // floating -> Windows 10 and below, Linux (original desktop card)
 function detectMode() {
   if (process.platform === 'darwin') return 'menubar';
@@ -81,7 +83,9 @@ const STRINGS = {
     trayFieldIsp: '菜单栏显示运营商',
     tooltip: 'IPWindow',
     ipLoading: '获取中…',
+    labelIp: 'IP',
     labelLoc: '位置',
+    labelIsp: '运营商',
     closeTitle: '退出',
     unknownLoc: '未知位置',
     updatePrefix: '更新 ',
@@ -98,7 +102,9 @@ const STRINGS = {
     trayFieldIsp: 'Menu bar: ISP',
     tooltip: 'IPWindow',
     ipLoading: 'Loading…',
+    labelIp: 'IP',
     labelLoc: 'Location',
+    labelIsp: 'ISP',
     closeTitle: 'Quit',
     unknownLoc: 'Unknown location',
     updatePrefix: 'Updated ',
@@ -110,11 +116,13 @@ const STRINGS = {
 let t = STRINGS.en; // resolved in app.whenReady once the locale is available.
 
 let win = null; // primary window: floating card or taskbar overlay widget
-let popover = null; // hover detail popover (taskbar + menubar modes)
+let popover = null; // hover detail popover (Windows taskbar mode)
 let tray = null;
 let refreshTimer = null;
 let popoverHideTimer = null;
 let lastInfo = null; // most recent successful lookup
+let detailNotification = null;
+let detailNotificationTimer = null;
 
 // ---------- Taskbar overlay state (Windows 11) ----------
 let taskbarHwnd = null; // BigInt HWND of our overlay window
@@ -618,6 +626,50 @@ function updateTrayTitle() {
   tray.setTitle(' ' + (text || ''));
 }
 
+function closeDetailNotification() {
+  if (detailNotificationTimer) {
+    clearTimeout(detailNotificationTimer);
+    detailNotificationTimer = null;
+  }
+  if (detailNotification) {
+    detailNotification.close();
+    detailNotification = null;
+  }
+}
+
+function detailNotificationBody() {
+  if (!lastInfo) return t.ipLoading;
+  const lines = [
+    `${t.labelIp}: ${lastInfo.ip}`,
+    `${t.labelLoc}: ${lastInfo.location || t.unknownLoc}`,
+  ];
+  if (lastInfo.isp) lines.push(`${t.labelIsp}: ${lastInfo.isp}`);
+  if (lastInfo.time) lines.push(`${t.updatePrefix}${new Date(lastInfo.time).toLocaleTimeString()}`);
+  return lines.join('\n');
+}
+
+async function showTrayDetailNotification() {
+  if (mode !== 'menubar' || !Notification.isSupported()) return;
+  if (!lastInfo) await refreshAndSend();
+  closeDetailNotification();
+  detailNotification = new Notification({
+    title: t.tooltip,
+    body: detailNotificationBody(),
+    silent: true,
+  });
+  const notification = detailNotification;
+  detailNotification.on('close', () => {
+    if (detailNotification !== notification) return;
+    detailNotification = null;
+    if (detailNotificationTimer) {
+      clearTimeout(detailNotificationTimer);
+      detailNotificationTimer = null;
+    }
+  });
+  detailNotification.show();
+  detailNotificationTimer = setTimeout(closeDetailNotification, 6000);
+}
+
 function buildTrayMenu(showWindow) {
   const items = [];
   if (mode === 'floating') items.push({ label: t.trayShow, click: showWindow });
@@ -628,7 +680,7 @@ function buildTrayMenu(showWindow) {
       config.menubarField = f;
       saveConfig(config);
       updateTrayTitle();
-      tray.setContextMenu(buildTrayMenu(showWindow));
+      if (mode !== 'menubar') tray.setContextMenu(buildTrayMenu(showWindow));
     };
     items.push({ type: 'separator' });
     items.push({
@@ -656,10 +708,11 @@ function buildTrayMenu(showWindow) {
 }
 
 function createTray() {
-  let icon = nativeImage.createFromPath(ICON_PATH);
+  const iconPath = mode === 'menubar' ? MAC_TRAY_ICON_PATH : ICON_PATH;
+  let icon = nativeImage.createFromPath(iconPath);
   if (!icon.isEmpty()) {
     // Tray icons are tiny; scale the master image down so it renders crisply.
-    icon = icon.resize({ width: 32, height: 32 });
+    icon = icon.resize({ width: mode === 'menubar' ? 18 : 32, height: mode === 'menubar' ? 18 : 32 });
     if (mode === 'menubar') icon.setTemplateImage(true);
   }
   try {
@@ -676,15 +729,21 @@ function createTray() {
 
   if (mode === 'menubar') {
     updateTrayTitle();
-    // macOS-only tray hover events drive the detail popover.
-    tray.on('mouse-enter', showPopover);
-    tray.on('mouse-leave', hidePopover);
+    tray.setIgnoreDoubleClickEvents(true);
+    tray.on('click', (event) => {
+      if (event && event.ctrlKey) {
+        tray.popUpContextMenu(buildTrayMenu(showWindow));
+      } else {
+        showTrayDetailNotification();
+      }
+    });
+    tray.on('right-click', () => tray.popUpContextMenu(buildTrayMenu(showWindow)));
   } else {
     // Double-clicking the tray icon also brings the widget back.
     tray.on('double-click', showWindow);
   }
   tray.setToolTip(t.tooltip);
-  tray.setContextMenu(buildTrayMenu(showWindow));
+  tray.setContextMenu(mode === 'menubar' ? null : buildTrayMenu(showWindow));
 }
 
 // ---------- IPC ----------
@@ -706,12 +765,11 @@ app.whenReady().then(() => {
   if (mode === 'taskbar') {
     createTaskbarWindow();
     createPopover();
-  } else if (mode === 'menubar') {
-    createPopover();
   } else {
     createFloatingWindow();
   }
   createTray();
+  if (mode === 'menubar') refreshAndSend();
 
   // Keep the embedded taskbar widget legible when the OS theme flips.
   nativeTheme.on('updated', () => {
@@ -744,6 +802,7 @@ app.on('before-quit', () => {
   if (netWatchTimer) clearInterval(netWatchTimer);
   if (netChangeDebounce) clearTimeout(netChangeDebounce);
   if (taskbarTimer) clearInterval(taskbarTimer);
+  closeDetailNotification();
   clearDragTimers();
   if (reassertTimer) clearTimeout(reassertTimer);
   if (taskbarWin) taskbarWin.stopForegroundWatch();

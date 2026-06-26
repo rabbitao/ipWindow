@@ -1,6 +1,6 @@
 {
   "name": "ip-window",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "A draggable floating widget showing current IP address and location",
   "main": "main.js",
   "scripts": {
@@ -47,9 +47,15 @@
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
-      "icon": "build/icon.png",
+      "icon": "build/icon.icns",
       "category": "public.app-category.utilities",
       "artifactName": "IPWindow-${version}-mac-${arch}.${ext}"
     }
