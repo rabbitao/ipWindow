@@ -765,7 +765,7 @@ app.whenReady().then(() => {
   if (mode === 'taskbar') {
     createTaskbarWindow();
     createPopover();
-  } else {
+  } else if (mode === 'floating') {
     createFloatingWindow();
   }
   createTray();
